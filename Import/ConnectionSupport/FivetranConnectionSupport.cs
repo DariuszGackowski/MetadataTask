@@ -1,5 +1,7 @@
 ﻿using FivetranClient;
 using Import.Helpers.Fivetran;
+using System.Text;
+using System.Collections.Concurrent;
 
 namespace Import.ConnectionSupport;
 
@@ -12,40 +14,59 @@ public class FivetranConnectionSupport : IConnectionSupport
     public object? GetConnectionDetailsForSelection()
     {
         Console.Write("Provide your Fivetran API Key: ");
-        var apiKey = Console.ReadLine() ?? throw new ArgumentNullException();
+        string? apiKey = ReadSecureLine() ?? throw new ArgumentNullException(nameof(apiKey));
         Console.Write("Provide your Fivetran API Secret: ");
-        var apiSecret = Console.ReadLine() ?? throw new ArgumentNullException();
+        string? apiSecret = ReadSecureLine() ?? throw new ArgumentNullException(nameof(apiSecret));
 
         return new FivetranConnectionDetailsForSelection(apiKey, apiSecret);
     }
+    private static string ReadSecureLine()
+    {
+        var password = new StringBuilder();
+        while (true)
+        {
+            var key = Console.ReadKey(true);
+            if (key.Key == ConsoleKey.Enter)
+            {
+                Console.WriteLine();
+                break;
+            }
+            if (key.Key == ConsoleKey.Backspace && password.Length > 0)
+            {
+                password.Length--;
+                Console.Write("\b \b");
+            }
+            else if (!char.IsControl(key.KeyChar))
+            {
+                password.Append(key.KeyChar);
+                Console.Write("*");
+            }
+        }
+        return password.ToString();
+    }
 
-    public object GetConnection(object? connectionDetails, string? selectedToImport)
+    public object? GetConnection(object? connectionDetails, string? selectedToImport)
     {
         if (connectionDetails is not FivetranConnectionDetailsForSelection details)
         {
             throw new ArgumentException("Invalid connection details provided.");
         }
 
-        return new RestApiManagerWrapper(
-            new RestApiManager(
-                details.ApiKey,
-                details.ApiSecret,
-                TimeSpan.FromSeconds(40)),
+        var restApiManager = new RestApiManager(details.ApiKey, details.ApiSecret, TimeSpan.FromSeconds(40));
+
+        return new RestApiManagerWrapper(restApiManager,
             selectedToImport ?? throw new ArgumentNullException(nameof(selectedToImport)));
     }
 
     public void CloseConnection(object? connection)
     {
-        switch (connection)
+        if (connection is IDisposable disposable)
         {
-            case RestApiManager restApiManager:
-                restApiManager.Dispose();
-                break;
-            case RestApiManagerWrapper restApiManagerWrapper:
-                restApiManagerWrapper.Dispose();
-                break;
-            default:
-                throw new ArgumentException("Invalid connection type provided.");
+            disposable.Dispose();
+        }
+        else
+        {
+            throw new ArgumentException("Invalid connection type provided.");
         }
     }
 
@@ -53,74 +74,80 @@ public class FivetranConnectionSupport : IConnectionSupport
     {
         if (connectionDetails is not FivetranConnectionDetailsForSelection details)
         {
-            throw new ArgumentException("Invalid connection details provided.");
+            throw new ArgumentException("Invalid connection details provided.", nameof(connectionDetails));
         }
         using var restApiManager = new RestApiManager(details.ApiKey, details.ApiSecret, TimeSpan.FromSeconds(40));
-        var groups = restApiManager
-            .GetGroupsAsync(CancellationToken.None)
-            .ToBlockingEnumerable();
+
+        var groups = restApiManager.GetGroupsAsync(CancellationToken.None).ToBlockingEnumerable().ToList();
+
         if (!groups.Any())
         {
-            throw new Exception("No groups found in Fivetran account.");
+            throw new InvalidOperationException("No groups found in Fivetran account.");
         }
 
-        // bufforing for performance
-        var consoleOutputBuffer = "";
-        consoleOutputBuffer += "Available groups in Fivetran account:\n";
-        var elementIndex = 1;
-        foreach (var group in groups)
-        {
-            consoleOutputBuffer += $"{elementIndex++}. {group.Name} (ID: {group.Id})\n";
-        }
-        consoleOutputBuffer += "Please select a group to import from (by number): ";
-        Console.Write(consoleOutputBuffer);
-        var input = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(input)
-            || !int.TryParse(input, out var selectedIndex)
-            || selectedIndex < 1
-            || selectedIndex > groups.Count())
-        {
-            throw new ArgumentException("Invalid group selection.");
-        }
-
-        var selectedGroup = groups.ElementAt(selectedIndex - 1);
+        var selectedGroup = SelectGroup(groups);
         return selectedGroup.Id;
+    }
+
+    private FivetranClient.Models.Group SelectGroup(IReadOnlyList<FivetranClient.Models.Group> groups)
+    {
+        Console.WriteLine("Available groups in Fivetran account:");
+
+        for (int i = 0; i < groups.Count; i++)
+        {
+            Console.WriteLine($"{i + 1}. {groups[i].Name} (ID: {groups[i].Id})");
+        }
+
+        Console.Write("Please select a group to import from (by number): ");
+        var input = Console.ReadLine();
+
+        if (!int.TryParse(input, out var selectedIndex) || selectedIndex < 1 || selectedIndex > groups.Count)
+        {
+            throw new ArgumentException("Invalid group selection. Please enter a valid number from the list.");
+        }
+
+        return groups[selectedIndex - 1];
     }
 
     public void RunImport(object? connection)
     {
         if (connection is not RestApiManagerWrapper restApiManagerWrapper)
         {
-            throw new ArgumentException("Invalid connection type provided.");
+            throw new ArgumentException("Invalid connection type provided.", nameof(connection));
         }
 
         var restApiManager = restApiManagerWrapper.RestApiManager;
         var groupId = restApiManagerWrapper.GroupId;
 
-        var connectors = restApiManager
-            .GetConnectorsAsync(groupId, CancellationToken.None)
-            .ToBlockingEnumerable();
+        var connectors = restApiManager.GetConnectorsAsync(groupId, CancellationToken.None).ToBlockingEnumerable().ToList();
         if (!connectors.Any())
         {
-            throw new Exception("No connectors found in the selected group.");
+            throw new InvalidOperationException("No connectors found in the selected group.");
         }
 
-        var allMappingsBuffer = "Lineage mappings:\n";
+        var allMappingsBuffer = new ConcurrentBag<string>();
         Parallel.ForEach(connectors, connector =>
         {
-            var connectorSchemas = restApiManager
-                .GetConnectorSchemasAsync(connector.Id, CancellationToken.None)
-                .Result;
+            var connectorSchemas = restApiManager.GetConnectorSchemasAsync(connector.Id, CancellationToken.None).Result;
 
-            foreach (var schema in connectorSchemas?.Schemas ?? [])
+            if (connectorSchemas?.Schemas == null) return;
+
+            foreach (var schema in connectorSchemas.Schemas)
             {
-                foreach (var table in schema.Value?.Tables ?? [])
+                if (schema.Value?.Tables == null) continue;
+
+                foreach (var table in schema.Value.Tables)
                 {
-                    allMappingsBuffer += $"  {connector.Id}: {schema.Key}.{table.Key} -> {schema.Value?.NameInDestination}.{table.Value.NameInDestination}\n";
+                    var mappingLine = $"  {connector.Id}: {schema.Key}.{table.Key} -> {schema.Value.NameInDestination}.{table.Value.NameInDestination}";
+                    allMappingsBuffer.Add(mappingLine);
                 }
             }
         });
 
-        Console.WriteLine(allMappingsBuffer);
+        Console.WriteLine("Lineage mappings:");
+        foreach (var line in allMappingsBuffer)
+        {
+            Console.WriteLine(line);
+        }
     }
 }
