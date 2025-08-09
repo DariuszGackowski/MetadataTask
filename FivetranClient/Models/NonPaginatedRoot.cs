@@ -1,6 +1,13 @@
-﻿namespace FivetranClient.Models;
+﻿
+namespace FivetranClient.Models;
 
 public class NonPaginatedRoot<T>
 {
-    public T? Data { get; set; }
+    private T? _data;
+
+    public T? Data
+    {
+        get => _data;
+        set => _data = value;
+    }
 }

@@ -1,7 +1,27 @@
-﻿namespace FivetranClient.Models;
+﻿using FivetranClient.Utilities;
+
+namespace FivetranClient.Models;
 
 public class Data<T>
 {
-    public List<T> Items { get; set; }
-    public string? NextCursor { get; set; }
+    private List<T> _items = [];
+    private string? _nextCursor;
+
+    public List<T> Items
+    {
+        get => _items;
+        set => _items = [.. Guard.NotNullOrContainsNull(value, nameof(Items))];
+    }
+
+    public string? NextCursor
+    {
+        get => _nextCursor;
+        set
+        {
+            if (value != null)
+                _nextCursor = Guard.NotNullOrWhiteSpace(value, nameof(NextCursor));
+            else
+                _nextCursor = null;
+        }
+    }
 }
