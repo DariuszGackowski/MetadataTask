@@ -8,7 +8,7 @@ namespace FivetranClient.Fetchers;
 
 public sealed class PaginatedFetcher(HttpRequestHandler requestHandler) : BaseFetcher(requestHandler)
 {
-    private const int PageSize = 1000;
+    private const int _pageSize = 1000;
 
     public async IAsyncEnumerable<T> FetchAllItemsAsync<T>(string endpoint, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -65,7 +65,7 @@ public sealed class PaginatedFetcher(HttpRequestHandler requestHandler) : BaseFe
     private string BuildUrl(string endpoint, string? cursor)
     {
         var urlBuilder = new StringBuilder(endpoint);
-        urlBuilder.Append($"?limit={PageSize}");
+        urlBuilder.Append($"?limit={_pageSize}");
 
         if (!string.IsNullOrWhiteSpace(cursor))
         {

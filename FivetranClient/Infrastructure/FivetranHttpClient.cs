@@ -5,29 +5,56 @@ namespace FivetranClient.Infrastructure;
 
 public class FivetranHttpClient : HttpClient
 {
-    public FivetranHttpClient(Uri baseAddress, string apiKey, string apiSecret, TimeSpan timeout)
+    private const string _userAgent = "aseduigbn";
+    private const string _authorizationScheme = "Basic";
+    private const string _jsonMediaType = "application/json";
+    private static readonly TimeSpan _defaultTimeout = TimeSpan.FromSeconds(40);
+
+    public FivetranHttpClient(Uri baseAddress, string apiKey, string apiSecret, TimeSpan timeout) : base()
     {
+        if (baseAddress == null)
+        {
+            throw new ArgumentNullException(nameof(baseAddress));
+        }
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            throw new ArgumentNullException(nameof(apiKey));
+        }
+        if (string.IsNullOrWhiteSpace(apiSecret))
+        {
+            throw new ArgumentNullException(nameof(apiSecret));
+        }
         if (timeout.Ticks <= 0)
-            throw new ArgumentOutOfRangeException(nameof(timeout), "Timeout must be a positive value");
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Timeout must be a positive value.");
+        }
 
-        this.DefaultRequestHeaders.Clear();
-        this.BaseAddress = baseAddress;
-        this.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Basic", this.CalculateToken(apiKey, apiSecret));
-        this.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        // we need to set Agent Header because otherwise sometimes it may be blocked by the server
-        // see: https://repost.aws/knowledge-center/waf-block-http-requests-no-user-agent
-        this.DefaultRequestHeaders.UserAgent.ParseAdd("aseduigbn");
-        this.Timeout = timeout;
+        BaseAddress = baseAddress;
+        DefaultRequestHeaders.Clear();
+        DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(_authorizationScheme, CalculateToken(apiKey, apiSecret));
+        DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue(_jsonMediaType));
+        DefaultRequestHeaders.UserAgent.ParseAdd(_userAgent);
+        Timeout = timeout;
     }
 
-    public FivetranHttpClient(Uri baseAddress, string apiKey, string apiSecret)
-        : this(baseAddress, apiKey, apiSecret, TimeSpan.FromSeconds(40))
+    public FivetranHttpClient(Uri baseAddress, string apiKey, string apiSecret) : this(baseAddress, apiKey, apiSecret, _defaultTimeout)
     {
+
     }
 
-    public string CalculateToken(string apiKey, string apiSecret)
+    private static string CalculateToken(string apiKey, string apiSecret)
     {
-        return Convert.ToBase64String(Encoding.ASCII.GetBytes($"{apiKey}:{apiSecret}"));
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            throw new ArgumentNullException(nameof(apiKey));
+        }
+
+        if (string.IsNullOrWhiteSpace(apiSecret))
+        {
+            throw new ArgumentNullException(nameof(apiSecret));
+        }
+
+        var tokenBytes = Encoding.ASCII.GetBytes($"{apiKey}:{apiSecret}");
+        return Convert.ToBase64String(tokenBytes);
     }
 }
