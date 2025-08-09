@@ -4,35 +4,29 @@ namespace FivetranClient.Infrastructure;
 
 public class TtlDictionary<TKey, TValue> where TKey : notnull
 {
-    private readonly ConcurrentDictionary<TKey, (TValue Value, DateTimeOffset ExpirationTime)> _dictionary = new();
+    private readonly ConcurrentDictionary<TKey, AsyncLazy<(TValue Value, DateTime ExpirationTime)>> _dictionary = new();
 
-    public TValue GetOrAdd(TKey key, Func<TValue> valueFactory, TimeSpan ttl)
+    public async Task<TValue> GetOrAddAsync(TKey key, Func<Task<TValue>> valueFactory, TimeSpan ttl)
     {
-        var currentDateTime = DateTimeOffset.UtcNow;
-        var (Value, ExpirationTime) = _dictionary.GetOrAdd(key, keyToAdd => (valueFactory(), currentDateTime.Add(ttl)));
-
-        if (currentDateTime < ExpirationTime)
+        var lazyEntry = _dictionary.GetOrAdd(key, k => new AsyncLazy<(TValue, DateTime)>(async () =>
         {
-            return Value;
+            var value = await valueFactory();
+            return (value, DateTime.UtcNow.Add(ttl));
+        }));
+
+        var entry = await lazyEntry.Value;
+
+        if (DateTime.UtcNow < entry.ExpirationTime)
+        {
+            return entry.Value;
         }
 
         _dictionary.TryRemove(key, out _);
-        var newValue = valueFactory();
-        var newEntry = (newValue, currentDateTime.Add(ttl));
-        _dictionary[key] = newEntry;
-
-        return newValue;
+        return await GetOrAddAsync(key, valueFactory, ttl);
     }
 
-    public bool TryGetValue(TKey key, out TValue? value)
+    private class AsyncLazy<T> : Lazy<Task<T>>
     {
-        if (_dictionary.TryGetValue(key, out var entry) && DateTimeOffset.UtcNow < entry.ExpirationTime)
-        {
-            value = entry.Value;
-            return true;
-        }
-
-        value = default;
-        return false;
+        public AsyncLazy(Func<Task<T>> taskFactory) : base(taskFactory) { }
     }
 }
