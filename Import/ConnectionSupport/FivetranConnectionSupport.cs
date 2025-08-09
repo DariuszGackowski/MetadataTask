@@ -69,13 +69,13 @@ public class FivetranConnectionSupport : IConnectionSupport
             throw new ArgumentException("Invalid connection type provided.");
         }
     }
-
     public string SelectToImport(object? connectionDetails)
     {
         if (connectionDetails is not FivetranConnectionDetailsForSelection details)
         {
             throw new ArgumentException("Invalid connection details provided.", nameof(connectionDetails));
         }
+
         using var restApiManager = new RestApiManager(details.ApiKey, details.ApiSecret, TimeSpan.FromSeconds(40));
 
         var groups = restApiManager.GetGroupsAsync(CancellationToken.None).ToBlockingEnumerable().ToList();
@@ -89,7 +89,7 @@ public class FivetranConnectionSupport : IConnectionSupport
         return selectedGroup.Id;
     }
 
-    private FivetranClient.Models.Group SelectGroup(IReadOnlyList<FivetranClient.Models.Group> groups)
+    private static FivetranClient.Models.Group SelectGroup(IReadOnlyList<FivetranClient.Models.Group> groups)
     {
         Console.WriteLine("Available groups in Fivetran account:");
 
