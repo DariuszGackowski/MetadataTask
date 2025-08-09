@@ -1,5 +1,6 @@
 ﻿using System.Net;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using FivetranClient.Models;
 
@@ -7,57 +8,69 @@ namespace FivetranClient.Fetchers;
 
 public sealed class PaginatedFetcher(HttpRequestHandler requestHandler) : BaseFetcher(requestHandler)
 {
-    private const ushort PageSize = 100;
+    private const int PageSize = 1000;
 
-    public IAsyncEnumerable<T> FetchItemsAsync<T>(string endpoint, CancellationToken cancellationToken)
+    public async IAsyncEnumerable<T> FetchAllItemsAsync<T>(string endpoint, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var firstPageTask = this.FetchPageAsync<T>(endpoint, cancellationToken);
-        return this.ProcessPagesRecursivelyAsync(endpoint, firstPageTask, cancellationToken);
-    }
+        string? nextCursor = null;
 
-    private async Task<PaginatedRoot<T>?> FetchPageAsync<T>(
-        string endpoint,
-        CancellationToken cancellationToken,
-        string? cursor = null)
-    {
-        var response = cursor is null
-            ? await base.RequestHandler.GetAsync($"{endpoint}?limit={PageSize}", cancellationToken)
-            : await base.RequestHandler.GetAsync($"{endpoint}?limit={PageSize}&cursor={WebUtility.UrlEncode(cursor)}", cancellationToken);
-        var content = await response.Content.ReadAsStringAsync(cancellationToken);
-        return JsonSerializer.Deserialize<PaginatedRoot<T>>(content, SerializerOptions);
-    }
-
-    // This implementation provides items as soon as they are available but also in the meantime fetches the next page
-    private async IAsyncEnumerable<T> ProcessPagesRecursivelyAsync<T>(
-        string endpoint,
-        Task<PaginatedRoot<T>?> currentPageTask,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var currentPage = await currentPageTask;
-        var nextCursor = currentPage?.Data?.NextCursor;
-
-        IAsyncEnumerable<T>? nextResults = null;
-        if (!string.IsNullOrWhiteSpace(nextCursor))
+        while (true)
         {
-            // fire and forget (await after yielding current items)
-            var nextTask = this.FetchPageAsync<T>(endpoint, cancellationToken, nextCursor);
-            nextResults = this.ProcessPagesRecursivelyAsync(endpoint, nextTask, cancellationToken);
-        }
-
-        foreach (var item in currentPage?.Data?.Items ?? [])
-        {
+            var currentPage = await FetchPageAsync<T>(endpoint, nextCursor, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            yield return item;
-        }
 
-        if (nextResults is null)
-            yield break;
-        await foreach (var nextItem in nextResults.WithCancellation(cancellationToken))
+            if (currentPage?.Data == null)
+            {
+                throw new InvalidOperationException($"API returned an invalid or null data structure for endpoint: {endpoint}.");
+            }
+
+            var items = currentPage.Data.Items;
+            nextCursor = currentPage.Data.NextCursor;
+
+            if (items == null)
+            {
+                throw new InvalidOperationException($"API returned a null list of items for endpoint: {endpoint}.");
+            }
+
+            foreach (var item in items)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return item;
+            }
+
+            if (string.IsNullOrWhiteSpace(nextCursor))
+            {
+                yield break;
+            }
+        }
+    }
+
+    private async Task<PaginatedRoot<T>> FetchPageAsync<T>(string endpoint, string? cursor, CancellationToken cancellationToken)
+    {
+        var url = BuildUrl(endpoint, cursor);
+        var response = await RequestHandler.GetAsync(url, cancellationToken);
+
+        response.EnsureSuccessStatusCode();
+
+        var content = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        var result = JsonSerializer.Deserialize<PaginatedRoot<T>>(content, SerializerOptions);
+        if (result == null)
         {
-            yield return nextItem;
+            throw new JsonException($"Failed to deserialize the response for endpoint: {endpoint}.");
         }
+        return result;
+    }
 
-        cancellationToken.ThrowIfCancellationRequested();
+    private string BuildUrl(string endpoint, string? cursor)
+    {
+        var urlBuilder = new StringBuilder(endpoint);
+        urlBuilder.Append($"?limit={PageSize}");
+
+        if (!string.IsNullOrWhiteSpace(cursor))
+        {
+            urlBuilder.Append($"&cursor={WebUtility.UrlEncode(cursor)}");
+        }
+        return urlBuilder.ToString();
     }
 }
